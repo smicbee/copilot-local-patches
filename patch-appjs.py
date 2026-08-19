@@ -43,6 +43,9 @@ import sys
 import tempfile
 
 # --- Patches: (Name, Original, Neu) -------------------------------------
+_SEARCHED_ROOTS = []
+
+
 PATCHES = [
     (
         "1-Host-mOi",
@@ -84,7 +87,9 @@ def _find_npm_root():
     return None
 
 
-def _find_target_appjs():
+def _candidate_roots():
+    """Liefert moegliche npm-global-Verzeichnisse. Diagnose-Infos in Geprueft."""
+    global _SEARCHED_ROOTS
     roots = []
     nr = _find_npm_root()
     if nr:
@@ -92,8 +97,12 @@ def _find_target_appjs():
     home = os.environ.get("USERPROFILE") or os.path.expanduser("~")
     appdata = os.environ.get("APPDATA") or os.path.join(home, "AppData", "Roaming")
     localappdata = os.environ.get("LOCALAPPDATA") or os.path.join(home, "AppData", "Local")
+
+    # %APPDATA%\npm ist der typische user-npm-Installort (Shim copilot.cmd).
+    # Die echte app.js liegt unter ...\npm\node_modules\@github\copilot-win32-x64\package\app.js
     candidates = [
         os.path.join(appdata, "npm", "node_modules"),
+        os.path.join(appdata, "node_modules"),
         os.path.join(localappdata, "npm", "node_modules"),
         os.path.join(home, "npm", "node_modules"),
         os.path.join(home, "AppData", "Roaming", "npm", "node_modules"),
@@ -101,18 +110,106 @@ def _find_target_appjs():
         os.path.expanduser("~/.npm-global/lib/node_modules"),
         os.path.expanduser("~/nvm/node_modules"),
         os.path.expanduser("~/scoop/apps/nodejs/current/node_modules"),
+        os.path.expanduser("~/scoop/apps/nodejs-lts/current/node_modules"),
+        os.path.expanduser("~/bun/install/global/node_modules"),
         "C:\\Program Files\\nodejs\\node_modules",
+        "C:\\Program Files (x86)\\nodejs\\node_modules",
     ]
+    # nvm-Windows: Versionsordner
+    nvm_home = os.path.join(home, "AppData", "Roaming", "nvm")
+    if os.path.isdir(nvm_home):
+        for entry in os.listdir(nvm_home):
+            nm = os.path.join(nvm_home, entry, "node_modules")
+            if os.path.isdir(nm):
+                candidates.append(nm)
     for c in candidates:
-        if c not in roots:
+        if c and c not in roots:
             roots.append(c)
+    _SEARCHED_ROOTS = list(roots)
+    return roots
+
+
+def _find_appjs_in_roots(roots):
+    """Direktsuche in bekannten Kandidaten plus Rekursiv-Scan unter @github."""
+    # 1) Direkte bekannte Layouts
     for root in roots:
         for sub in ("@github/copilot-win32-x64/package/app.js",
+                    "@github/copilot-win32-x64/app.js",
+                    "@github/copilot-win32-x64-1.0.80/package/app.js",
                     "@github/copilot/package/app.js",
                     "copilot-win32-x64/package/app.js"):
-            path = os.path.join(root, sub)
-            if os.path.isfile(path):
-                return path
+            p = os.path.join(root, sub)
+            if os.path.isfile(p):
+                return p
+    # 2) Rekursiv: unter @github nach app.js, wenn ein copilot-Binary nebenliegt
+    for root in roots:
+        gh = os.path.join(root, "@github")
+        if not os.path.isdir(gh):
+            continue
+        try:
+            for folder in os.listdir(gh):
+                if not (folder.startswith("copilot") or folder.startswith("copilot-win32")):
+                    continue
+                subdir = os.path.join(gh, folder)
+                # package/app.js (npm) oder app.js (entpackt)
+                for app in ("package/app.js", "app.js"):
+                    cand = os.path.join(subdir, app)
+                    if os.path.isfile(cand):
+                        return cand
+        except OSError:
+            continue
+    return None
+
+
+def _resolve_shim_to_appjs():
+    """Liest die copilot.cmd/copilot-Shim-Datei, falls darin auf app.js gezeigt wird."""
+    for shim in ("copilot.cmd", "copilot"):
+        sh = shutil.which(shim, path=None)  # nutzt PATH (incl. %APPDATA\npm\...)
+        if not sh:
+            continue
+        base = os.path.dirname(sh)
+        # Shim zeigt typisch auf ...\node_modules\@github\copilot-win32-x64\copilot.js
+        for cand in ("node_modules/@github/copilot-win32-x64/package/app.js",
+                     "node_modules/@github/copilot/package/app.js",
+                     "node_modules/@github/copilot-win32-x64/app.js"):
+            p = os.path.join(base, cand)
+            if os.path.isfile(p):
+                return p
+    return None
+
+
+def _resolved_exe_appjs():
+    """Nutzt shutil.which('copilot') nur fuer die App-Datei neben dem echten Binary."""
+    for exe_name in ("copilot.exe", "copilot"):
+        exe = shutil.which(exe_name)
+        if not exe:
+            continue
+        real = os.path.realpath(exe)
+        dirn = os.path.dirname(real)
+        for sub in ("app.js", "package/app.js"):
+            p = os.path.join(dirn, sub)
+            if os.path.isfile(p):
+                return p
+    return None
+
+
+def _find_target_appjs(explicit=None):
+    if explicit:
+        p = explicit
+        if os.path.isdir(p):
+            cand = os.path.join(p, "app.js")
+            return cand if os.path.isfile(cand) else None
+        if os.path.isfile(p):
+            return p
+        return None
+
+    # verschiedene Hebel in Wahrscheinlichkeitsreihenfolge
+    for fn in (_resolved_exe_appjs,
+               _resolve_shim_to_appjs,
+               lambda: _find_appjs_in_roots(_candidate_roots())):
+        hit = fn()
+        if hit:
+            return hit
     return None
 
 
@@ -133,10 +230,30 @@ def _atomic_write(path, data):
 
 
 def main():
-    target = _find_target_appjs()
+    # Optionales Positional-Argument: Pfad zur app.js (oder deren Verzeichnis)
+    explicit = None
+    rest = [a for a in sys.argv[1:] if not a.startswith("--")]
+    if rest:
+        explicit = rest[0]
+
+    if explicit:
+        target = _find_target_appjs(explicit=explicit)
+        status = "via Uebergabe"
+    else:
+        target = _find_target_appjs()
+        status = "automatisch"
+
     if target is None:
-        print("[!] Copilot-CLI app.js nicht gefunden. Zuletzt gepflegter "
-              "Standardpfad wird erwartet - manueller Austausch noetig.")
+        print(f"[!] Copilot-CLI app.js nicht gefunden ({status}).")
+        try:
+            print("    Gepruefte npm/Suche-Pfade:")
+            for r in _SEARCHED_ROOTS:
+                print(f"      - {r}")
+        except Exception:
+            pass
+        print("    Tipp: Pfad direkt uebergeben, z. B.:")
+        print('      python patch-appjs.py C:\\Users\\<user>\\AppData\\Roaming\\npm\\node_modules\\@github\\copilot-win32-x64\\package\\app.js')
+        print("    Install-Ort ermitteln (cmd):  where copilot   ODER   npm root -g")
         return 2
 
     print(f"[*] Ziel: {target}")

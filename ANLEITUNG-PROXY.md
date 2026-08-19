@@ -129,6 +129,29 @@ NACH EINEM CLI-UPDATE (die CLI kann sich selbst aktualisieren)
   (set-model.py fasst das NICHT an; nur manuell ergaenzen, wenn gewuenscht.)
 
 ------------------------------------------------------------
+FALLS: "Copilot-CLI app.js nicht gefunden"
+------------------------------------------------------------
+Umfeld: Die Copilot CLI ist hier typischerweise VIA NPM ALS BENUTZER installiert.
+Der npm-Shim liegt unter:
+    %APPDATA%\npm\copilot     (d.h. C:\Users\<user>\AppData\Roaming\npm\copilot)
+Die ECHTE app.js (die gepatcht wird) liegt aber unter:
+    %APPDATA%\Roaming\npm\node_modules\@github\copilot-win32-x64\package\app.js
+    bzw.
+    %APPDATA%\npm\node_modules\@github\copilot-win32-x64\package\app.js
+
+Der Patch-Befehl sucht diesen Pfad jetzt automatisch (auch als "user" installiert,
+auch unter nvm/scoop/bun, und rekursiv unter @github). Falls er ihn dennoch
+nicht findet, den Ort eindeutig ermitteln (cmd):
+    where copilot            -> zeigt den Shim/Pfad zur copilot-Datei
+    npm root -g              -> zeigt das globale node_modules-Verzeichnis
+Danach app.js direkt uebergeben, z. B.:
+    python patch-appjs.py "%APPDATA%\npm\node_modules\@github\copilot-win32-x64\package\app.js"
+oder (PowerShell):
+    python patch-appjs.py "$env:APPDATA\npm\node_modules\@github\copilot-win32-x64\package\app.js"
+
+TIP die echte Datei zu pruefen: `dir /s /b "%APPDATA%\npm" | findstr /i "app.js"`
+
+------------------------------------------------------------
 AUTOSTART - Detail
 ------------------------------------------------------------
   Legt bei der Anmeldung an:
