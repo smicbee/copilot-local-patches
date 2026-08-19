@@ -1,0 +1,72 @@
+GitHub Copilot CLI 1.0.80 - lokal angepasstes Windows-Paket
+============================================================
+
+Was angepasst ist (patch-appjs.py patcht diese 5 Stellen direkt in die CLI):
+  1. Host-Aufloesung:
+     Prioritaet: --host > COPILOT_GH_HOST (Env) > GH_HOST (Env) > https://github.com
+     (mOi fuer Login-Host, bOi fuer --host-Aufloesung, Hilfetext angepasst)
+  2. Third-Party-MCP-Server:
+     B1: mcp3pEnabled wird nicht mehr aus der Account-Login-Information
+         abgeleitet, sondern lokal aktiv gesetzt.
+     B2: Bei Fehlern bei der entfernten Einstellungsabfrage greift die lokale
+         Konfiguration (statt bei fehlender Fernvorgabe alles zu sperren).
+  3. Modellwahl (lokal):
+     set-model.py setzt nur den model-Key; bestehende Einstellungen bleiben.
+     Beigefuegt ist eine optionale Vermittlungsstelle (managed-settings-proxy.py),
+     mit der die lokal hinterlegte Modellwahl Vorrang vor einer entfernt
+     verwalteten Vorgabe hat. Details: ANLEITUNG-PROXY.md
+
+------------------------------------------------------
+Dateien in dieser Mappe
+------------------------------------------------------
+  managed-settings-proxy.py   optionale Vermittlungsstelle (Python 3)
+  start-proxy.bat             startet die Vermittlung unsichtbar (pythonw)
+  install-autostart.bat       EINRICHTUNG in einem Aufruf:
+                              - patch-appjs.py (patched die CLI, mit Backup)
+                              - setx Env-Var
+                              - set-model.py (atomar, nur model-Key)
+                              - schtasks-Autostart
+                              - sofortiger Start der Vermittlung
+  patch-appjs.py              idempotenter Patch der app.js (update-robust)
+  set-model.py                setzt NUR die Modellwahl atomar
+  stop-proxy.bat              stoppen / deinstallieren
+  status-proxy.bat            Status / Erreichbarkeit / Log
+  github-copilot-win32-x64-1.0.80.tgz   originales npm-Bundle (1.0.80)
+  app.js.PATCHED              bereits durchpatchte Referenzdatei (1.0.80)
+  settings.json               Vorlage (nur model-Key)
+  settings.json.example       Vorlage (nur model-Key)
+
+------------------------------------------------------
+Installation (Windows Server, via npm)
+------------------------------------------------------
+Voraussetzung: Python 3 (python.org, "Add to PATH").
+
+1) Mappe auf dem Server ablegen, z. B. C:\copilot-proxy\
+2) Dateien entsperren (Rechtsklick -> Eigenschaften -> Zulassen)
+3) Als Administrator:
+     cd C:\copilot-proxy
+     install-autostart.bat
+
+   Das erledigt automatisch, ohne bestehende Einstellungen zu ueberschreiben:
+     - patcht die installierte app.js (idempotent; Original-Backup
+       app.js.original.bak)
+     - setzt COPILOT_DEBUG_GITHUB_API_URL=http://127.0.0.1:8790
+     - setzt die Modellwahl atomar (nur model-Key, andere Settings bleiben)
+     - legt Autostart-Aufgabe ClawdiaCopilotManagedSettings an
+     - startet die Vermittlung sofort
+
+4) NEUES Terminal oeffnen (damit die Env-Var greift) und copilot starten.
+
+------------------------------------------------------
+Aktualisierung / nach CLI-Update
+------------------------------------------------------
+Die CLI selbst aktualisiert sich ggf. selbst. Nach einem Update die
+Anpassungen einfach neu anwenden (idempotent, update-robust):
+     python patch-appjs.py
+    (und)  python managed-settings-proxy.py --daemon
+
+------------------------------------------------------
+Pruefung
+------------------------------------------------------
+     status-proxy.bat
+   In der CLI: /model -> zeigt das gewuenschte Modell.
