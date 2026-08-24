@@ -5,15 +5,17 @@ patch-appjs.py - idempotenter In-place-Patch der Copilot-CLI app.js.
 
 Wozu:
   Statt eine vorgefertigte app.js zu kopieren (die von CLI-Updates ueberschrieben
-  wird), patcht dieses Werkzeug die 5 bekannten Stellen direkt in der aktuell
+  wird), patcht dieses Werkzeug die 9 bekannten Stellen direkt in der aktuell
   installierten app.js. So kann es nach jedem CLI-Update erneut ausgefuehrt
   werden und die Anpassungen wiederholen.
 
 Was es macht:
+  - Beendet unter Windows vor dem Patchen alle laufenden Copilot-CLI-Prozesse
+    samt Kindprozessen und verifiziert, dass keiner uebrig bleibt.
   - Findet die Copilot-CLI app.js (Windows: npm root -g + Standardpfade).
   - Legt einmalig ein Backup des Originals an (app.js.original.bak), wenn noch
     keines existiert (bei ungepatchter Datei).
-  - Wendet die 5 string-basierten Ersetzungen an. Pro Regel:
+  - Wendet die 9 string-basierten Ersetzungen an. Pro Regel:
       * schon angewendet (neuer Text vorhanden) -> ueberspringen
       * Original vorhanden                        -> ersetzen
       * keins von beidem (Struktur vom Update geaendert) -> Warnung + zaehlen
@@ -26,6 +28,10 @@ Eigene Regeln (Code-Stellen in 1.0.80):
   3. help  --host-Hilfetext
   4. B1    mcp3pEnabled nicht aus Login ableiten, sondern aktiv setzen
   5. B2    Managed-Settings-Abfrage-Fehler: lokal statt blockierend
+  6. Model Modellkatalog auf gpt-5.6* begrenzen (Picker und Subagents)
+  7. Model separaten Subagent-only-Katalog ebenfalls auf gpt-5.6* begrenzen
+  8. Model ungefilterten UI-Katalog ebenfalls begrenzen
+  9. Model persistenten Modellcache ebenfalls begrenzen
 
 Hinweis:
   - Wirkt NUR, wenn die zugrundeliegenden Code-Stellen in der neuen CLI-Version
@@ -72,7 +78,77 @@ PATCHES = [
         '`),{mcp3pEnabled:!1,...o}}}',
         '`),{mcp3pEnabled:!0,...o}}}',
     ),
+    (
+        "6-Model-gpt-5.6-only",
+        'function GF(t,e){return JSON.parse(h.modelPolicyFilterAllowedModelsJson(JSON.stringify(t),TEt(e)))}',
+        'function GF(t,e){return JSON.parse(h.modelPolicyFilterAllowedModelsJson(JSON.stringify(t),TEt(e))).filter(n=>typeof n?.id==="string"&&n.id.startsWith("gpt-5.6"))}',
+    ),
+    (
+        "7-Subagent-only-gpt-5.6",
+        'this.subagentOnlyModelCache=(r.unfilteredModels??[]).filter(m=>fN.has(m.id)&&(!m.policy||m.policy.state==="enabled"))',
+        'this.subagentOnlyModelCache=(r.unfilteredModels??[]).filter(m=>fN.has(m.id)&&typeof m?.id==="string"&&m.id.startsWith("gpt-5.6")&&(!m.policy||m.policy.state==="enabled"))',
+    ),
+    (
+        "8-UI-unfiltered-gpt-5.6",
+        'return{list:g,unfilteredModels:r.unfilteredModels??[],modelPriceCategories:p,quotaSnapshots:r.quotaSnapshots,resolvedAuthLogin:d}}',
+        'return{list:g,unfilteredModels:GF(r.unfilteredModels??[],u),modelPriceCategories:p,quotaSnapshots:r.quotaSnapshots,resolvedAuthLogin:d}}',
+    ),
+    (
+        "9-Model-cache-gpt-5.6",
+        'setModelListCache(e){h.sessionModelListCacheReplaceJson(this.nativeSessionId,JSON.stringify(e))}get modelListCache(){return this.getModelListCache()}set modelListCache(e){h.sessionModelListCacheReplaceJson(this.nativeSessionId,e===void 0?"[]":JSON.stringify(e))}',
+        'setModelListCache(e){h.sessionModelListCacheReplaceJson(this.nativeSessionId,JSON.stringify(e.filter(n=>typeof n?.id==="string"&&n.id.startsWith("gpt-5.6"))))}get modelListCache(){return this.getModelListCache()}set modelListCache(e){h.sessionModelListCacheReplaceJson(this.nativeSessionId,e===void 0?"[]":JSON.stringify(e.filter(n=>typeof n?.id==="string"&&n.id.startsWith("gpt-5.6"))))}',
+    ),
 ]
+
+
+COPILOT_PROCESS_NAMES = (
+    "copilot",
+    "copilot-win32-x64",
+    "github-copilot-cli",
+)
+
+
+def _stop_copilot_processes():
+    """Beendet unter Windows alle bekannten Copilot-CLI-Prozessbaeume."""
+    if os.name != "nt":
+        return 0
+
+    names = ",".join(f"'{name}'" for name in COPILOT_PROCESS_NAMES)
+    script = f"""
+$names = @({names})
+$running = @(Get-Process -ErrorAction SilentlyContinue |
+    Where-Object {{ $names -contains $_.ProcessName }})
+$count = $running.Count
+foreach ($proc in $running) {{
+    & taskkill.exe /PID $proc.Id /T /F | Out-Null
+}}
+Start-Sleep -Milliseconds 400
+$remaining = @(Get-Process -ErrorAction SilentlyContinue |
+    Where-Object {{ $names -contains $_.ProcessName }})
+if ($remaining.Count -gt 0) {{
+    [Console]::Error.WriteLine(
+        "Copilot-Prozesse konnten nicht beendet werden: " +
+        (($remaining | ForEach-Object {{ $_.ProcessName + ':' + $_.Id }}) -join ', '))
+    exit 1
+}}
+[Console]::Out.Write($count)
+"""
+    try:
+        result = subprocess.run(
+            ["powershell.exe", "-NoProfile", "-NonInteractive", "-Command", script],
+            capture_output=True,
+            text=True,
+            timeout=45,
+        )
+    except (OSError, subprocess.SubprocessError) as exc:
+        raise RuntimeError(f"Prozessbeendigung konnte nicht ausgefuehrt werden: {exc}") from exc
+    if result.returncode != 0:
+        detail = result.stderr.strip() or f"Exit-Code {result.returncode}"
+        raise RuntimeError(detail)
+    try:
+        return int(result.stdout.strip() or "0")
+    except ValueError as exc:
+        raise RuntimeError("Ungueltige Antwort der Prozesspruefung") from exc
 
 
 def _find_npm_root():
@@ -102,10 +178,14 @@ def _candidate_roots():
     # Die echte app.js liegt unter ...\npm\node_modules\@github\copilot-win32-x64\package\app.js
     candidates = [
         os.path.join(appdata, "npm", "node_modules"),
+        os.path.join(appdata, "npm", "node_modules", "@github", "copilot", "node_modules"),
         os.path.join(appdata, "node_modules"),
         os.path.join(localappdata, "npm", "node_modules"),
         os.path.join(home, "npm", "node_modules"),
         os.path.join(home, "AppData", "Roaming", "npm", "node_modules"),
+        # Michaels npm-Layout: ...\\@github\\copilot\\node_modules\\@github\\copilot-win32-x64\\package\\app.js
+        # Schreibweise absichtlich wie vom Zielsystem gemeldet; Windows ist case-insensitive.
+        os.path.join(home, "Appdata", "Roaming", "npm", "node_modules", "@github", "copilot", "node_modules"),
         os.path.join(home, "AppData", "Local", "npm", "node_modules"),
         os.path.expanduser("~/.npm-global/lib/node_modules"),
         os.path.expanduser("~/nvm/node_modules"),
@@ -255,6 +335,15 @@ def main():
         print('      python patch-appjs.py C:\\Users\\<user>\\AppData\\Roaming\\npm\\node_modules\\@github\\copilot-win32-x64\\package\\app.js')
         print("    Install-Ort ermitteln (cmd):  where copilot   ODER   npm root -g")
         return 2
+
+    try:
+        stopped = _stop_copilot_processes()
+    except RuntimeError as exc:
+        print(f"[!] Laufende Copilot-Prozesse konnten nicht sicher beendet werden: {exc}")
+        print("    Patch abgebrochen; bitte aus einem separaten Administrator-Terminal erneut starten.")
+        return 4
+    if os.name == "nt":
+        print(f"[*] Copilot-Prozessbaeume beendet: {stopped}")
 
     print(f"[*] Ziel: {target}")
     try:

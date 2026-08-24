@@ -1,7 +1,7 @@
 GitHub Copilot CLI 1.0.80 - lokal angepasstes Windows-Paket
 ============================================================
 
-Was angepasst ist (patch-appjs.py patcht diese 5 Stellen direkt in die CLI):
+Was angepasst ist (patch-appjs.py patcht diese 9 Stellen direkt in die CLI):
   1. Host-Aufloesung:
      Prioritaet: --host > COPILOT_GH_HOST (Env) > GH_HOST (Env) > https://github.com
      (mOi fuer Login-Host, bOi fuer --host-Aufloesung, Hilfetext angepasst)
@@ -15,6 +15,14 @@ Was angepasst ist (patch-appjs.py patcht diese 5 Stellen direkt in die CLI):
      Beigefuegt ist eine optionale Vermittlungsstelle (managed-settings-proxy.py),
      mit der die lokal hinterlegte Modellwahl Vorrang vor einer entfernt
      verwalteten Vorgabe hat. Details: ANLEITUNG-PROXY.md
+  4. Modellkatalog:
+     Hauptmodell-Picker und Subagent-Modellwahl sehen ausschliesslich Modelle,
+     deren ID mit gpt-5.6 beginnt (z. B. sol, luna, terra und Varianten).
+     Aeltere Modelle wie gpt-5.3 koennen dadurch nicht mehr automatisch fuer
+     Subagents ausgewaehlt werden.
+     Das gilt auch fuer den separaten internen Subagent-only-Katalog der CLI.
+     Zusaetzlich werden der ungefilterte UI-Katalog ("Other"/"Unavailable")
+     und der persistente Modellcache auf gpt-5.6* beschraenkt.
 
 ------------------------------------------------------
 Dateien in dieser Mappe
@@ -48,6 +56,8 @@ Voraussetzung: Python 3 (python.org, "Add to PATH").
      install-autostart.bat
 
    Das erledigt automatisch, ohne bestehende Einstellungen zu ueberschreiben:
+     - beendet zuerst alle laufenden Copilot-CLI-Prozesse samt Kindprozessen
+       und bricht ab, falls deren Beendigung nicht verifiziert werden kann
      - patcht die installierte app.js (idempotent; Original-Backup
        app.js.original.bak)
      - setzt COPILOT_DEBUG_GITHUB_API_URL=http://127.0.0.1:8790
@@ -56,6 +66,13 @@ Voraussetzung: Python 3 (python.org, "Add to PATH").
      - startet die Vermittlung sofort
 
 4) NEUES Terminal oeffnen (damit die Env-Var greift) und copilot starten.
+   Bereits laufende Copilot-Prozesse vorher komplett beenden; sie behalten die
+   alte app.js sonst im Speicher.
+
+Der Patcher erkennt auch Michaels verschachteltes npm-Layout:
+  %USERPROFILE%\Appdata\Roaming\npm\node_modules\@github\copilot\node_modules\
+Darin wird insbesondere folgende Plattformdatei gesucht:
+  @github\copilot-win32-x64\package\app.js
 
 ------------------------------------------------------
 Aktualisierung / nach CLI-Update
@@ -69,4 +86,5 @@ Anpassungen einfach neu anwenden (idempotent, update-robust):
 Pruefung
 ------------------------------------------------------
      status-proxy.bat
-   In der CLI: /model -> zeigt das gewuenschte Modell.
+   In der CLI: /model -> zeigt nur gpt-5.6*-Modelle.
+   In der CLI: /agents -> bietet fuer Subagents nur gpt-5.6*-Modelle an.
