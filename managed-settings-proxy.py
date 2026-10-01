@@ -19,6 +19,28 @@ UI_FILE = BASE / 'ui.html'
 MAX_BODY = 1024 * 1024
 KEYS = set('allowedMcpServers allowManagedHooksOnly allowManagedMcpServersOnly deniedMcpServers enabledPlugins extraKnownMarketplaces forceLoginOrgs forceRemoteSettingsRefresh model autoTier effortLevel contextTier permissions policyHelper policyHelperFailureMode remoteControl sandbox shellShortcut strictKnownMarketplaces strictPluginOnlyCustomization telemetry'.split())
 LOCK = threading.RLock()
+MODELS_UPSTREAM = 'https://api.githubcopilot.com/models'
+TOKEN_ENV = ('COPILOT_GITHUB_TOKEN', 'GH_TOKEN', 'GITHUB_TOKEN')
+
+def clean_models(value):
+    if not isinstance(value, list) or len(value) > 500:
+        raise ValueError('models must be an array (max 500)')
+    out = []
+    for m in value:
+        if not isinstance(m, str) or not m.strip() or len(m) > 200 or any(c.isspace() for c in m.strip()):
+            raise ValueError('Invalid model id')
+        if m.strip() not in out: out.append(m.strip())
+    return out
+
+def fetch_models(url, token):
+    req = urllib.request.Request(url, headers={'Authorization': 'Bearer ' + token, 'Accept': 'application/json', 'User-Agent': 'copilot-managed-settings'})
+    class NoRedirect(urllib.request.HTTPRedirectHandler):
+        def redirect_request(self, *a, **k): return None
+    with urllib.request.build_opener(NoRedirect).open(req, timeout=20) as r:
+        data = json.loads(r.read(MAX_BODY))
+    items = data.get('data', data) if isinstance(data, dict) else data
+    ids = [m['id'] for m in items if isinstance(m, dict) and isinstance(m.get('id'), str) and m.get('model_picker_enabled', True) is not False]
+    return clean_models(ids)
 ENV_KEYS = ('COPILOT_GH_HOST GH_HOST COPILOT_MODEL COPILOT_OFFLINE COPILOT_PROVIDER_BASE_URL COPILOT_PROVIDER_TYPE '
             'COPILOT_PROVIDER_WIRE_API COPILOT_PROVIDER_TRANSPORT COPILOT_PROVIDER_API_KEY_COMMAND COPILOT_PROVIDER_MODEL_ID '
             'COPILOT_PROVIDER_WIRE_MODEL COPILOT_PROVIDER_MAX_PROMPT_TOKENS COPILOT_PROVIDER_MAX_OUTPUT_TOKENS '
@@ -110,6 +132,11 @@ class Handler(http.server.BaseHTTPRequestHandler):
         return True
     def settings(self):
         return validate(json.loads(self.server.settings_file.read_text(encoding='utf-8')))
+    def models_state(self):
+        f = self.server.models_file
+        if not f.exists(): return {'models': [], 'source': 'none'}
+        v = json.loads(f.read_text(encoding='utf-8'))
+        return {'models': clean_models(v.get('models', [])), 'source': str(v.get('source', 'manual'))}
     def env_values(self):
         f = self.server.env_file
         return validate_env(json.loads(f.read_text(encoding='utf-8'))) if f.exists() else {}
@@ -136,6 +163,9 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 self.send_header('Content-Security-Policy', "default-src 'none'; script-src 'unsafe-inline'; style-src 'unsafe-inline'; connect-src 'self'; base-uri 'none'; form-action 'none'")
                 self.send_header('X-Frame-Options', 'DENY')
                 self.end_headers(); self.wfile.write(body)
+            elif path == '/admin/models':
+                if self.admin():
+                    with LOCK: self.respond(200, self.models_state())
             elif path == '/admin/env':
                 if self.admin():
                     with LOCK: self.respond(200, {'values': self.env_values(), 'allowed': ENV_KEYS})
@@ -148,7 +178,37 @@ class Handler(http.server.BaseHTTPRequestHandler):
                 self.relay()
         except (ValueError, OSError):
             self.respond(503, {'error': 'Settings unavailable or invalid; no empty fallback'})
-    def do_PUT(self): self.change(False)
+    def do_POST(self):
+        if not self.permitted(): return
+        if urllib.parse.urlsplit(self.path).path != '/admin/models/refresh':
+            self.respond(405, {'error': 'Method not allowed'}); return
+        if not self.admin(): return
+        token = next((os.environ[k] for k in TOKEN_ENV if os.environ.get(k)), None)
+        if not token:
+            self.respond(409, {'error': 'No token in the server environment (COPILOT_GITHUB_TOKEN, GH_TOKEN or GITHUB_TOKEN). Enter models manually.'}); return
+        try:
+            ids = fetch_models(self.server.models_upstream, token)
+            if not ids: raise ValueError('Empty model list')
+        except (OSError, ValueError):
+            self.respond(502, {'error': 'Model list could not be fetched from the account; keeping the current list'}); return
+        with LOCK:
+            atomic(self.server.models_file, (json.dumps({'models': ids, 'source': 'account'}, indent=2) + '\n').encode())
+        self.respond(200, {'models': ids, 'source': 'account'})
+    def do_PUT(self):
+        if urllib.parse.urlsplit(self.path).path == '/admin/models':
+            return self.put_models()
+        self.change(False)
+    def put_models(self):
+        if not self.permitted() or not self.admin(): return
+        try:
+            length = int(self.headers.get('Content-Length', '0'))
+            if not 0 < length <= MAX_BODY: raise ValueError('Invalid body size')
+            ids = clean_models(json.loads(self.rfile.read(length)).get('models'))
+            with LOCK:
+                atomic(self.server.models_file, (json.dumps({'models': ids, 'source': 'manual'}, indent=2) + '\n').encode())
+            self.respond(200, {'models': ids, 'source': 'manual'})
+        except (ValueError, AttributeError, OSError) as e:
+            self.respond(400, {'error': str(e) if isinstance(e, ValueError) else 'Invalid request'})
     def do_PATCH(self): self.change(True)
     def change(self, patch):
         if not self.permitted(): return
@@ -209,6 +269,8 @@ def make_server(settings_file, key_file, port=8790, env_file=None):
     server = http.server.ThreadingHTTPServer(('127.0.0.1', port), Handler)
     server.settings_file = settings_file
     server.env_file = env_file
+    server.models_file = settings_file.parent / 'models-cache.json'
+    server.models_upstream = MODELS_UPSTREAM
     server.key = key_file.read_text().strip()
     if len(server.key) < 32: raise ValueError('Invalid admin key')
     return server

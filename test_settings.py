@@ -65,6 +65,41 @@ class Tests(unittest.TestCase):
             self.assertIn('Content-Security-Policy', r.headers); self.assertIn(b'Managed Settings', r.read())
     def test_same_origin_allowed_foreign_blocked(self):
         self.assertEqual(self.request(headers={'Origin': self.url})[0], 200)
+    def _fake_upstream(self, payload, status=200):
+        class U(m.http.server.BaseHTTPRequestHandler):
+            seen = {}
+            def do_GET(h):
+                U.seen['auth'] = h.headers.get('Authorization')
+                b = json.dumps(payload).encode(); h.send_response(status); h.send_header('Content-Length', str(len(b))); h.end_headers(); h.wfile.write(b)
+            def log_message(h, *a): pass
+        srv = m.http.server.ThreadingHTTPServer(('127.0.0.1', 0), U)
+        threading.Thread(target=srv.serve_forever, daemon=True).start()
+        self.addCleanup(srv.shutdown); self.addCleanup(srv.server_close)
+        self.server.models_upstream = f'http://127.0.0.1:{srv.server_port}/models'
+        return U
+    def test_models_manual_roundtrip(self):
+        self.assertEqual(self.request('/admin/models')[1], {'models': [], 'source': 'none'})
+        self.assertEqual(self.request('/admin/models', 'PUT', {'models': ['a', 'b', 'a']})[1], {'models': ['a', 'b'], 'source': 'manual'})
+        self.assertEqual(self.request('/admin/models')[1]['models'], ['a', 'b'])
+        self.assertEqual(self.request('/admin/models', 'PUT', {'models': ['has space']})[0], 400)
+        self.assertEqual(self.request('/admin/models', 'PUT', {'models': 'x'})[0], 400)
+        self.assertEqual(self.request('/admin/models', auth=False)[0], 401)
+    def test_models_refresh_without_token(self):
+        for k in m.TOKEN_ENV: os.environ.pop(k, None)
+        self.assertEqual(self.request('/admin/models/refresh', 'POST', {})[0], 409)
+    def test_models_refresh_from_account(self):
+        U = self._fake_upstream({'data': [{'id': 'm-one'}, {'id': 'm-two', 'model_picker_enabled': True}, {'id': 'hidden', 'model_picker_enabled': False}]})
+        os.environ['GH_TOKEN'] = 'fixture-token'; self.addCleanup(os.environ.pop, 'GH_TOKEN', None)
+        st, body = self.request('/admin/models/refresh', 'POST', {})
+        self.assertEqual((st, body['models'], body['source']), (200, ['m-one', 'm-two'], 'account'))
+        self.assertEqual(U.seen['auth'], 'Bearer fixture-token')
+        self.assertNotIn('fixture-token', (Path(self.tmp.name) / 'models-cache.json').read_text())
+    def test_models_refresh_failure_keeps_list(self):
+        self.request('/admin/models', 'PUT', {'models': ['keep']})
+        self._fake_upstream({'error': 'x'}, status=401)
+        os.environ['GH_TOKEN'] = 'fixture-token'; self.addCleanup(os.environ.pop, 'GH_TOKEN', None)
+        self.assertEqual(self.request('/admin/models/refresh', 'POST', {})[0], 502)
+        self.assertEqual(self.request('/admin/models')[1]['models'], ['keep'])
     def test_persisted(self):
         self.request(method='PATCH',body={'shellShortcut':False})
         self.assertEqual(json.loads(self.file.read_text()),{'shellShortcut':False})

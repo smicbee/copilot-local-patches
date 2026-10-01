@@ -7,45 +7,65 @@ h1{font-size:20px}h2{font-size:16px;margin:24px 0 8px;border-bottom:1px solid va
 input[type=text],input[type=number],input[type=password],select,textarea{width:100%;box-sizing:border-box}textarea{font-family:ui-monospace,monospace;min-height:70px}
 button{cursor:pointer}button.p{background:var(--a);color:#fff;border-color:var(--a)}.bar{display:flex;gap:8px;flex-wrap:wrap;margin:12px 0;position:sticky;top:0;background:Canvas;padding:8px 0;z-index:2}
 #msg{padding:6px 0;min-height:1.4em}.err{color:#d33}.ok{color:#2a8}.unset{opacity:.55}.tag{font-size:12px;opacity:.7}
+details.ms{position:relative}details.ms>summary{list-style:none;cursor:pointer;padding:6px 8px;border:1px solid var(--b);border-radius:6px;min-height:1.4em}
+details.ms>summary::after{content:' \25BE';float:right;opacity:.6}.pop{position:absolute;z-index:5;left:0;right:0;max-height:300px;overflow:auto;background:Canvas;border:1px solid var(--b);border-radius:6px;padding:6px;box-shadow:0 6px 18px #0004}
+.pop label{display:flex;gap:8px;align-items:center;padding:3px 4px;cursor:pointer}.pop label:hover{background:#8882}.pop input[type=checkbox]{width:auto}.pop .add{display:flex;gap:6px;margin-top:6px;border-top:1px solid var(--b);padding-top:6px}
+.chips{display:flex;gap:4px;flex-wrap:wrap}.chip{background:#8883;border-radius:10px;padding:1px 8px;font-size:13px}
 @media(max-width:640px){.row{grid-template-columns:1fr}}</style></head><body>
 <h1>Copilot CLI 1.0.90 – Managed Settings &amp; Launcher</h1>
 <div class="bar"><input id="key" type="password" placeholder="Admin-Schlüssel (Inhalt von .admin-key)" style="max-width:340px" autocomplete="off">
-<button onclick="login()">Laden</button><button class="p" onclick="save()">Speichern</button><button onclick="load()">Neu laden</button></div>
+<button onclick="login()">Laden</button><button class="p" onclick="save()">Speichern</button><button onclick="load()">Neu laden</button><button onclick="refreshModels()">Modelle aus Konto laden</button><span id="msrc" class="tag"></span></div>
 <div id="msg"></div>
 <h2>Managed Settings <span class="tag">/copilot_internal/managed_settings</span></h2><div id="ms"></div>
 <h2>Launcher-Umgebung <span class="tag">gilt beim nächsten Start von copilot-managed; echte Umgebungsvariablen haben Vorrang</span></h2><div id="env"></div>
 <h2>Rohansicht Managed Settings (JSON)</h2><textarea id="raw" style="min-height:160px" spellcheck="false"></textarea>
 <div class="bar"><button onclick="applyRaw()">JSON ins Formular übernehmen</button></div>
-<p class="tag">Leere Felder = nicht gesetzt (Wert wird entfernt). Geheimnisse (API-Keys) werden hier bewusst nicht gespeichert – <code>COPILOT_PROVIDER_API_KEY</code> bitte als echte Umgebungsvariable setzen. Änderungen wirken beim nächsten Settings-Abruf bzw. CLI-Start.</p>
+<p class="tag">Leere Felder = nicht gesetzt (Wert wird entfernt). „Modelle aus Konto laden“ nutzt ein Token aus der Umgebung des Servers (COPILOT_GITHUB_TOKEN, GH_TOKEN oder GITHUB_TOKEN); es wird nicht gespeichert. Ohne Token trägst du Modelle über „Eigener Wert“ ein. Geheimnisse (API-Keys) werden hier bewusst nicht gespeichert – <code>COPILOT_PROVIDER_API_KEY</code> bitte als echte Umgebungsvariable setzen. Änderungen wirken beim nächsten Settings-Abruf bzw. CLI-Start.</p>
 <script>
 const MS=[
-['Modell',[['model','string','AI-Modell'],['autoTier','enum:efficiency,balance,intelligence','Routing bei Auto'],['effortLevel','string','Reasoning-Effort'],['contextTier','enum:default,long_context','Kontext-Tier']]],
+['Modell',[['model','pick:models','AI-Modell (Auswahl aus Konto/Liste)'],['autoTier','enum:efficiency,balance,intelligence','Routing bei Auto'],['effortLevel','pick:none,minimal,low,medium,high,xhigh,max','Reasoning-Effort'],['contextTier','enum:default,long_context','Kontext-Tier']]],
 ['MCP / Hooks',[['allowedMcpServers','json','Erlaubte MCP-Server (Array)'],['deniedMcpServers','json','Gesperrte MCP-Server (Array)'],['allowManagedMcpServersOnly','bool','Nur verwaltete MCP-Server'],['allowManagedHooksOnly','bool','Nur verwaltete Hooks']]],
 ['Plugins',[['enabledPlugins','json','Plugins (Objekt)'],['extraKnownMarketplaces','json','Zusätzliche Marketplaces (Objekt)'],['strictKnownMarketplaces','json','Marketplace-Allowlist'],['strictPluginOnlyCustomization','json','Strikte Plugin-Anpassung']]],
 ['Anmeldung',[['forceLoginOrgs','json','Erzwungene Organisationen (Array) – blockiert BYOK'],['forceRemoteSettingsRefresh','bool','Remote-Settings immer neu laden']]],
-['Berechtigungen',[['permissions','json','Objekt mit allow / ask / deny (String-Arrays)']]],
+['Berechtigungen',[['permissions.allow','multi:tools','Erlaubt (allow)'],['permissions.ask','multi:tools','Nachfragen (ask)'],['permissions.deny','multi:tools','Verboten (deny)'],['permissions.disableBypassPermissionsMode','pick:disable','YOLO-Modus abschalten']]],
 ['Policy-Helper',[['policyHelper','json','Policy-Helper'],['policyHelperFailureMode','json','Fehlermodus']]],
 ['Sonstiges',[['remoteControl','json','Remote Control'],['sandbox','json','Sandbox-Policy (Objekt)'],['shellShortcut','bool','Shell-Shortcut ($)'],['telemetry','json','Telemetrie (Objekt)']]]];
-const EV=[['COPILOT_GH_HOST','GitHub-Host nur für Copilot'],['GH_HOST','GitHub-Host (allgemein)'],['COPILOT_MODEL','Standardmodell'],['COPILOT_OFFLINE','Offline-Modus (true/false)'],
-['COPILOT_PROVIDER_BASE_URL','BYOK: Endpunkt-URL'],['COPILOT_PROVIDER_TYPE','BYOK: Typ (openai | azure | anthropic)','openai,azure,anthropic'],['COPILOT_PROVIDER_WIRE_API','BYOK: Wire-API'],['COPILOT_PROVIDER_TRANSPORT','BYOK: Transport (websockets nur bei openai + responses)'],
-['COPILOT_PROVIDER_MODEL_ID','BYOK: Modell-ID'],['COPILOT_PROVIDER_WIRE_MODEL','BYOK: Modellname an die API'],['COPILOT_PROVIDER_MAX_PROMPT_TOKENS','BYOK: max. Prompt-Tokens'],['COPILOT_PROVIDER_MAX_OUTPUT_TOKENS','BYOK: max. Output-Tokens'],
+const EV=[['COPILOT_GH_HOST','GitHub-Host nur für Copilot'],['GH_HOST','GitHub-Host (allgemein)'],['COPILOT_MODEL','Standardmodell','pick:models'],['COPILOT_OFFLINE','Offline-Modus','pick:true,false'],
+['COPILOT_PROVIDER_BASE_URL','BYOK: Endpunkt-URL'],['COPILOT_PROVIDER_TYPE','BYOK: Typ (openai | azure | anthropic)','openai,azure,anthropic'],['COPILOT_PROVIDER_WIRE_API','BYOK: Wire-API','pick:completions,responses'],['COPILOT_PROVIDER_TRANSPORT','BYOK: Transport (websockets nur bei openai + responses)','pick:http,websockets'],
+['COPILOT_PROVIDER_MODEL_ID','BYOK: Modell-ID','pick:models'],['COPILOT_PROVIDER_WIRE_MODEL','BYOK: Modellname an die API','pick:models'],['COPILOT_PROVIDER_MAX_PROMPT_TOKENS','BYOK: max. Prompt-Tokens'],['COPILOT_PROVIDER_MAX_OUTPUT_TOKENS','BYOK: max. Output-Tokens'],
 ['COPILOT_PROVIDER_HEADERS','BYOK: Header (Name: Wert je Zeile)'],['COPILOT_PROVIDER_AZURE_API_VERSION','BYOK: Azure-API-Version'],['COPILOT_PROVIDER_API_KEY_COMMAND','BYOK: Befehl, der den Schlüssel ausgibt (wird von der CLI ausgeführt)']];
-const $=id=>document.getElementById(id);let KEY=sessionStorage.getItem('k')||'';$('key').value=KEY;
+const $=id=>document.getElementById(id);
+const MODEL_WIDGETS=[];const OPT={models:[],tools:['shell(git:*)','shell(git push)','shell(rm)','shell(npm:*)','write(.env)','write(.github/copilot-instructions.md)','url(https://github.com)','memory','read']};
+function ms(k,type,val,opts,multi){const w=document.createElement('details');w.className='ms';w.dataset.k=k;w.dataset.t=type;w.dataset.multi=multi?'1':'0';
+ const sum=document.createElement('summary');const pop=document.createElement('div');pop.className='pop';w.append(sum,pop);
+ let sel=multi?[...(val||[])]:(val?[val]:[]);let all=[...new Set([...(opts||[]),...sel])];
+ w.getValue=()=>multi?sel:(sel[0]||'');w.setOptions=o=>{all=[...new Set([...o,...sel])];draw()};
+ function draw(){sum.innerHTML='';if(!sel.length){sum.textContent='(nicht gesetzt)';sum.style.opacity='.6'}else{sum.style.opacity='1';const c=document.createElement('div');c.className='chips';for(const x of sel){const s=document.createElement('span');s.className='chip';s.textContent=x;c.append(s)}sum.append(c)}
+  pop.innerHTML='';for(const o of all){const l=document.createElement('label');const c=document.createElement('input');c.type='checkbox';c.checked=sel.includes(o);
+   c.onchange=()=>{if(multi){sel=c.checked?[...sel,o]:sel.filter(x=>x!==o)}else{sel=c.checked?[o]:[];w.open=false}draw()};l.append(c,document.createTextNode(o));pop.append(l)}
+  const a=document.createElement('div');a.className='add';const i=document.createElement('input');i.type='text';i.placeholder='Eigener Wert …';const b=document.createElement('button');b.textContent='+';b.type='button';
+  const add=()=>{const v=i.value.trim();if(!v)return;if(!all.includes(v))all.push(v);if(multi){if(!sel.includes(v))sel.push(v)}else{sel=[v];w.open=false}draw()};b.onclick=add;i.onkeydown=e=>{if(e.key==='Enter'){e.preventDefault();add()}};a.append(i,b);pop.append(a)}
+ draw();return w}
+document.addEventListener('click',e=>{for(const d of document.querySelectorAll('details.ms[open]'))if(!d.contains(e.target))d.open=false});
+let KEY=sessionStorage.getItem('k')||'';$('key').value=KEY;
 function msg(t,c){$('msg').textContent=t;$('msg').className=c||''}
 async function api(p,m,b){const r=await fetch(p,{method:m||'GET',headers:{Authorization:'Bearer '+KEY,'Content-Type':'application/json'},body:b?JSON.stringify(b):undefined});
  const j=await r.json().catch(()=>({}));if(!r.ok)throw new Error(j.error||r.status);return j}
-function el(k,t,v){let e;if(t==='bool'){e=document.createElement('select');for(const o of ['','true','false']){const x=document.createElement('option');x.value=o;x.textContent=o===''?'(nicht gesetzt)':o;e.append(x)}e.value=v===undefined?'':String(v)}
+function el(k,t,v){let e;if(t.startsWith('pick:')||t.startsWith('multi:')){const m=t.startsWith('multi:'),a=t.slice(m?6:5);const o=a==='models'?OPT.models:a==='tools'?OPT.tools:a.split(',');e=ms(k,t,v,o,m);if(a==='models')MODEL_WIDGETS.push(e);return e}
+ if(t==='bool'){e=document.createElement('select');for(const o of ['','true','false']){const x=document.createElement('option');x.value=o;x.textContent=o===''?'(nicht gesetzt)':o;e.append(x)}e.value=v===undefined?'':String(v)}
  else if(t.startsWith('enum:')){e=document.createElement('select');for(const o of ['',...t.slice(5).split(',')]){const x=document.createElement('option');x.value=o;x.textContent=o||'(nicht gesetzt)';e.append(x)}e.value=v===undefined?'':v}
  else if(t==='json'){e=document.createElement('textarea');e.value=v===undefined?'':JSON.stringify(v,null,2);e.spellcheck=false}
  else{e=document.createElement('input');e.type='text';e.value=v===undefined?'':v}e.dataset.k=k;e.dataset.t=t;return e}
 function render(ms,env){$('ms').innerHTML='';for(const[g,fs]of MS){const h=document.createElement('div');h.innerHTML='<b>'+g+'</b>';h.style.marginTop='10px';$('ms').append(h);
- for(const[k,t,d]of fs){const r=document.createElement('div');r.className='row';const l=document.createElement('div');l.innerHTML='<code></code><small></small>';l.firstChild.textContent=k;l.lastChild.textContent=d;r.append(l,el(k,t,ms[k]));$('ms').append(r)}}
+ for(const[k,t,d]of fs){const r=document.createElement('div');r.className='row';const l=document.createElement('div');l.innerHTML='<code></code><small></small>';l.firstChild.textContent=k;l.lastChild.textContent=d;r.append(l,el(k,t,k.includes('.')?k.split('.').reduce((o,x)=>o&&o[x],ms):ms[k]));$('ms').append(r)}}
  $('env').innerHTML='';for(const[k,d,o]of EV){const r=document.createElement('div');r.className='row';const l=document.createElement('div');l.innerHTML='<code></code><small></small>';l.firstChild.textContent=k;l.lastChild.textContent=d;
- r.append(l,el(k,o?'enum:'+o:'string',env[k]));$('env').append(r)}
+ r.append(l,el(k,o&&(o.startsWith('pick:'))?o:(o?'enum:'+o:'string'),env[k]));$('env').append(r)}
  $('raw').value=JSON.stringify(ms,null,2)}
-function collect(root,sel){const o={};for(const e of $(root).querySelectorAll('[data-k]')){const t=e.dataset.t,v=e.value.trim();if(v==='')continue;
+function collect(root,sel){const o={};for(const e of $(root).querySelectorAll('[data-k]')){const t=e.dataset.t;if(e.getValue){const g=e.getValue();if(Array.isArray(g)?!g.length:!g)continue;const parts=e.dataset.k.split('.');let c=o;for(const p of parts.slice(0,-1))c=c[p]=c[p]||{};c[parts[parts.length-1]]=g;continue}const v=e.value.trim();if(v==='')continue;
  if(t==='bool')o[e.dataset.k]=v==='true';else if(t==='json')o[e.dataset.k]=JSON.parse(v);else o[e.dataset.k]=v}return o}
-async function load(){try{const[a,b]=await Promise.all([api('/admin/settings'),api('/admin/env')]);render(a,b.values);msg('Geladen.','ok')}catch(e){msg('Fehler: '+e.message,'err')}}
+async function loadModels(){try{const m=await api('/admin/models');OPT.models=m.models;$('msrc').textContent=m.models.length?m.models.length+' Modelle ('+(m.source==='account'?'aus Konto':'manuell')+')':'Liste leer – bitte aus Konto laden oder eigene Werte eintragen'}catch(e){}}
+async function refreshModels(){try{const m=await api('/admin/models/refresh','POST');OPT.models=m.models;for(const w of MODEL_WIDGETS)w.setOptions(m.models);$('msrc').textContent=m.models.length+' Modelle (aus Konto)';msg('Modellliste aus Konto geladen.','ok')}catch(e){msg('Modellliste: '+e.message,'err')}}
+async function load(){try{MODEL_WIDGETS.length=0;await loadModels();const[a,b]=await Promise.all([api('/admin/settings'),api('/admin/env')]);render(a,b.values);msg('Geladen.','ok')}catch(e){msg('Fehler: '+e.message,'err')}}
 async function login(){KEY=$('key').value.trim();sessionStorage.setItem('k',KEY);load()}
 async function save(){try{const ms=collect('ms'),ev=collect('env');await api('/admin/settings','PUT',ms);await api('/admin/env','PUT',ev);msg('Gespeichert. Neuer Settings-Abruf bzw. Neustart von copilot-managed nötig.','ok');load()}catch(e){msg('Fehler: '+e.message,'err')}}
 function applyRaw(){try{render(JSON.parse($('raw').value),collect('env'))&&0;msg('JSON übernommen (noch nicht gespeichert).','ok')}catch(e){msg('Ungültiges JSON: '+e.message,'err')}}

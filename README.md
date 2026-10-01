@@ -45,6 +45,13 @@ im Browser öffnen. Admin-Schlüssel (Inhalt von `.admin-key`) eingeben, dann
 - Launcher-Umgebung, u. a. BYOK-Variablen (`COPILOT_PROVIDER_*`), Host, Offline
   (gespeichert in `launcher-env.json`; echte Umgebungsvariablen haben Vorrang)
 - Rohansicht des JSON
+- Dropdowns mit Checkboxen: Modell (Einzelauswahl), Reasoning-Effort, Permissions
+  allow/ask/deny (Mehrfachauswahl), BYOK-Typ/Wire-API/Transport; jeweils mit
+  „Eigener Wert“ für alles, was nicht in der Liste steht
+- Modellliste: „Modelle aus Konto laden“ fragt api.githubcopilot.com/models mit
+  einem Token aus der Serverumgebung (COPILOT_GITHUB_TOKEN, GH_TOKEN oder
+  GITHUB_TOKEN) ab; das Token wird nicht gespeichert. Ergebnis in
+  `models-cache.json`. Ohne Token Modelle manuell eintragen.
 
 Leere Felder werden entfernt. API-Schlüssel (`COPILOT_PROVIDER_API_KEY`) werden
 bewusst nicht gespeichert, sondern bleiben echte Umgebungsvariablen. Die Seite
