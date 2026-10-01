@@ -1,17 +1,13 @@
-# ---- Groesse / wiederholbar ----
-# Das originale npm-Bundle ist ~162 MB (> GitHub-100-MB-Limit).
-# Es ist einfach via `npm pack @github/copilot-win32-x64@1.0.80` wiederholbar.
-github-copilot-win32-x64-1.0.80.tgz
-
-# ---- Laufzeit-/Log-Artefakte ----
-copilot-proxy.log
+# Laufzeit / lokale Geheimnisse
+.admin-key
+managed-settings.json
+launcher-env.json
 *.log
-
-# ---- Backups / Schattenkopien ----
-app.js.original.bak
+__pycache__/
+.settings-*
+# Große Binärpakete (per npm pack wiederholbar)
+*.tgz
 *.bak
 *.tmp
-
-# ---- Betriebssystem / Editoren ----
 .DS_Store
 Thumbs.db
